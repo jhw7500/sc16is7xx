@@ -100,7 +100,6 @@ ssh root@<target-ip> 'depmod -a && modprobe sc16is7xx_ext'
 | `sc16is7xx.h` | 공용 헤더 (최신 커널 분리 구조 참고용) |
 | `Makefile` | 커널 모듈 빌드 스크립트 |
 | `make-for-imx8` | iMX8MP 크로스 컴파일 스크립트 |
-| `setup_for_pim` | PIM 빌드 환경 설정 스크립트 |
 
 ## 라이선스
 
