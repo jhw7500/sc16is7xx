@@ -1,0 +1,6 @@
+#!/bin/bash
+export KERNEL_SRC=/opt/desktop/build-desktop/workspace/sources/linux-imx
+export KBUILD_OUTPUT=/opt/desktop/build-desktop/workspace/sources/build
+export ARCH=arm64
+export CROSS_COMPILE=aarch64-linux-gnu-
+
