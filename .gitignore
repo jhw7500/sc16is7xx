@@ -12,3 +12,7 @@ modules.order
 
 # Editor
 .vscode/
+
+# Local tooling cache
+.omc/
+__pycache__/
