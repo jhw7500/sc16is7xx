@@ -16,3 +16,6 @@ modules.order
 # Local tooling cache
 .omc/
 __pycache__/
+
+# Local reference docs not tracked in this repo
+docs/sc126is752.pdf
