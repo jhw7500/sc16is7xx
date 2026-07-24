@@ -437,6 +437,9 @@ static void sc16is7xx_fifo_write(struct uart_port *port, u8 to_send)
 	if (unlikely(!to_send))
 		return;
 
+	/* Serialised by efr_lock; required for the map-wide cache bypass below. */
+	lockdep_assert_held(&s->efr_lock);
+
 	/*
 	 * Bypass the regcache while streaming the FIFO: on 5.10
 	 * regmap_noinc_write() still writes every payload byte into the
@@ -979,6 +982,7 @@ static void sc16is7xx_ier_clear(struct uart_port *port, u8 bit)
 	 * non-recursive spinlock. The config struct is serialised against
 	 * sc16is7xx_reg_proc(), which snapshots it under port->lock.
 	 */
+	lockdep_assert_held(&port->lock);
 	one->config.flags |= SC16IS7XX_RECONF_IER;
 	one->config.ier_mask |= bit;
 	one->config.ier_val &= ~bit;
