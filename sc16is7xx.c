@@ -437,7 +437,17 @@ static void sc16is7xx_fifo_write(struct uart_port *port, u8 to_send)
 	if (unlikely(!to_send))
 		return;
 
+	/*
+	 * Bypass the regcache while streaming the FIFO: on 5.10
+	 * regmap_noinc_write() still writes every payload byte into the
+	 * register cache (the noinc flag does not guard the cache-write loop
+	 * in _regmap_raw_write_impl()), which would clobber the cached
+	 * IER/EFCR/... slots of adjacent registers. TX data must never enter
+	 * the cache.
+	 */
+	regcache_cache_bypass(s->regmap, true);
 	regmap_noinc_write(s->regmap, addr, s->buf, to_send);
+	regcache_cache_bypass(s->regmap, false);
 }
 
 static void sc16is7xx_port_update(struct uart_port *port, u8 reg,
@@ -668,9 +678,6 @@ static void sc16is7xx_diag_log(struct uart_port *port, const char *reason,
 		 port->icount.parity, port->icount.brk,
 		 port->icount.buf_overrun);
 }
-
-static void sc16is7xx_ier_set(struct uart_port *port, u8 bit);
-static void sc16is7xx_stop_tx(struct uart_port *port);
 
 static void sc16is7xx_handle_rx(struct uart_port *port, unsigned int rxlen,
 				unsigned int iir)
@@ -965,35 +972,28 @@ static void sc16is7xx_ier_clear(struct uart_port *port, u8 bit)
 {
 	struct sc16is7xx_port *s = dev_get_drvdata(port->dev);
 	struct sc16is7xx_one *one = to_sc16is7xx_one(port, port);
-	unsigned long irqflags;
 
-	spin_lock_irqsave(&port->lock, irqflags);
+	/*
+	 * Callers are uart_ops (stop_tx/stop_rx) that already run with
+	 * port->lock held. Re-acquiring it here would self-deadlock the same
+	 * non-recursive spinlock. The config struct is serialised against
+	 * sc16is7xx_reg_proc(), which snapshots it under port->lock.
+	 */
 	one->config.flags |= SC16IS7XX_RECONF_IER;
 	one->config.ier_mask |= bit;
 	one->config.ier_val &= ~bit;
-	spin_unlock_irqrestore(&port->lock, irqflags);
-	kthread_queue_work(&s->kworker, &one->reg_work);
-}
-
-static void sc16is7xx_ier_set(struct uart_port *port, u8 bit)
-{
-	struct sc16is7xx_port *s = dev_get_drvdata(port->dev);
-	struct sc16is7xx_one *one = to_sc16is7xx_one(port, port);
-	unsigned long irqflags;
-
-	spin_lock_irqsave(&port->lock, irqflags);
-	one->config.flags |= SC16IS7XX_RECONF_IER;
-	one->config.ier_mask |= bit;
-	one->config.ier_val |= bit;
-	spin_unlock_irqrestore(&port->lock, irqflags);
 	kthread_queue_work(&s->kworker, &one->reg_work);
 }
 
 static void sc16is7xx_stop_tx(struct uart_port *port)
 {
-	/* Synchronous IER update — prevent THRI spin in IRQ handler */
-	sc16is7xx_port_update(port, SC16IS7XX_IER_REG,
-			      SC16IS7XX_IER_THRI_BIT, 0);
+	/*
+	 * stop_tx() runs under port->lock (atomic). Defer the IER write to the
+	 * kworker instead of touching the sleeping SPI regmap here. A spurious
+	 * THRI IRQ meanwhile is harmless: handle_tx() disables THRI when the
+	 * ring is empty or TX is stopped.
+	 */
+	sc16is7xx_ier_clear(port, SC16IS7XX_IER_THRI_BIT);
 }
 
 static void sc16is7xx_stop_rx(struct uart_port *port)
