@@ -19,6 +19,7 @@
 - Preserve unrelated working-tree changes in both package repositories.
 - The official source baseline is `9f71cb97ff1c0fe2401a0d1b8b6ababbecac2e19` with `sc16is7xx.c` blob `62675b6ee0811dbf6e7bcad0ef95fc534a08a6ae`.
 - The private workflow source baseline is merge commit `1788388e038760c899e78009e6a4b1b0e3bdfc8c` with `sc16is7xx.c` blob `070bb868090420f23bebce8bfc1cd17173d20276`.
+- The canonical `9f71cb9` source contains 18 pre-existing trailing-whitespace findings. Preserve the exact blob instead of normalizing those lines during this alignment.
 
 ---
 
@@ -122,6 +123,10 @@ git hash-object sc16is7xx.c
 ```
 
 Expected blob: `62675b6ee0811dbf6e7bcad0ef95fc534a08a6ae`.
+
+`git diff --check -- sc16is7xx.c` is expected to report the 18 inherited
+trailing-whitespace findings from `9f71cb9`. The exact blob check is the release
+gate; no new whitespace cleanup is part of this task.
 
 - [ ] **Step 3: Build and inspect the official source**
 
