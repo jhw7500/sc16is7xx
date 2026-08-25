@@ -345,7 +345,8 @@ struct sc16is7xx_devtype {
 
 struct sc16is7xx_one_config {
 	unsigned int			flags;
-	u8				ier_clear;
+	u8				ier_mask;
+	u8				ier_val;
 };
 
 struct sc16is7xx_one {
@@ -785,8 +786,14 @@ static void sc16is7xx_handle_tx(struct uart_port *port)
 		return;
 	}
 
-	if (uart_circ_empty(xmit) || uart_tx_stopped(port))
+	if (uart_circ_empty(xmit) || uart_tx_stopped(port)) {
+		/* Disable THRI synchronously to prevent IRQ handler spin */
+		sc16is7xx_port_update(port, SC16IS7XX_IER_REG,
+				      SC16IS7XX_IER_THRI_BIT, 0);
+		if (unlikely(sc16is7xx_diag))
+			sc16is7xx_diag_log(port, "tx-idle", 0, 0, 0);
 		return;
+	}
 
 	/* Get length of data pending in circular buffer */
 	to_send = uart_circ_chars_pending(xmit);
@@ -815,6 +822,14 @@ static void sc16is7xx_handle_tx(struct uart_port *port)
 
 	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 		uart_write_wakeup(port);
+
+	if (uart_circ_empty(xmit))
+		sc16is7xx_port_update(port, SC16IS7XX_IER_REG,
+				      SC16IS7XX_IER_THRI_BIT, 0);
+	else
+		sc16is7xx_port_update(port, SC16IS7XX_IER_REG,
+				      SC16IS7XX_IER_THRI_BIT,
+				      SC16IS7XX_IER_THRI_BIT);
 }
 
 static bool sc16is7xx_port_irq(struct sc16is7xx_port *s, int portno)
@@ -946,7 +961,7 @@ static void sc16is7xx_reg_proc(struct kthread_work *ws)
 	}
 	if (config.flags & SC16IS7XX_RECONF_IER)
 		sc16is7xx_port_update(&one->port, SC16IS7XX_IER_REG,
-				      config.ier_clear, 0);
+				      config.ier_mask, config.ier_val);
 
 	if (config.flags & SC16IS7XX_RECONF_RS485)
 		sc16is7xx_reconf_rs485(&one->port);
@@ -957,13 +972,27 @@ static void sc16is7xx_ier_clear(struct uart_port *port, u8 bit)
 	struct sc16is7xx_port *s = dev_get_drvdata(port->dev);
 	struct sc16is7xx_one *one = to_sc16is7xx_one(port, port);
 
+	/*
+	 * Callers are uart_ops (stop_tx/stop_rx) that already run with
+	 * port->lock held. Re-acquiring it here would self-deadlock the same
+	 * non-recursive spinlock. The config struct is serialised against
+	 * sc16is7xx_reg_proc(), which snapshots it under port->lock.
+	 */
+	lockdep_assert_held(&port->lock);
 	one->config.flags |= SC16IS7XX_RECONF_IER;
-	one->config.ier_clear |= bit;
+	one->config.ier_mask |= bit;
+	one->config.ier_val &= ~bit;
 	kthread_queue_work(&s->kworker, &one->reg_work);
 }
 
 static void sc16is7xx_stop_tx(struct uart_port *port)
 {
+	/*
+	 * stop_tx() runs under port->lock (atomic). Defer the IER write to the
+	 * kworker instead of touching the sleeping SPI regmap here. A spurious
+	 * THRI IRQ meanwhile is harmless: handle_tx() disables THRI when the
+	 * ring is empty or TX is stopped.
+	 */
 	sc16is7xx_ier_clear(port, SC16IS7XX_IER_THRI_BIT);
 }
 
@@ -1201,8 +1230,7 @@ static int sc16is7xx_startup(struct uart_port *port)
 			      SC16IS7XX_EFCR_TXDISABLE_BIT,
 			      0);
 
-	/* Enable RX, TX interrupts */
-	val = SC16IS7XX_IER_RDI_BIT | SC16IS7XX_IER_THRI_BIT;
+	val = SC16IS7XX_IER_RDI_BIT;
 	sc16is7xx_port_write(port, SC16IS7XX_IER_REG, val);
 
 	return 0;
