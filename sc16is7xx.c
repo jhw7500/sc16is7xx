@@ -389,9 +389,7 @@ static void sc16is7xx_fifo_read(struct uart_port *port, unsigned int rxlen)
 	const u8 line = sc16is7xx_line(port);
 	u8 addr = (SC16IS7XX_RHR_REG << SC16IS7XX_REG_SHIFT) | line;
 
-	regcache_cache_bypass(s->regmap, true);
-	regmap_raw_read(s->regmap, addr, s->buf, rxlen);
-	regcache_cache_bypass(s->regmap, false);
+	regmap_noinc_read(s->regmap, addr, s->buf, rxlen);
 }
 
 static void sc16is7xx_fifo_write(struct uart_port *port, u8 to_send)
@@ -407,8 +405,19 @@ static void sc16is7xx_fifo_write(struct uart_port *port, u8 to_send)
 	if (unlikely(!to_send))
 		return;
 
+	/* Serialised by efr_lock; required for the map-wide cache bypass below. */
+	lockdep_assert_held(&s->efr_lock);
+
+	/*
+	 * Bypass the regcache while streaming the FIFO: on 5.10
+	 * regmap_noinc_write() still writes every payload byte into the
+	 * register cache (the noinc flag does not guard the cache-write loop
+	 * in _regmap_raw_write_impl()), which would clobber the cached
+	 * IER/EFCR/... slots of adjacent registers. TX data must never enter
+	 * the cache.
+	 */
 	regcache_cache_bypass(s->regmap, true);
-	regmap_raw_write(s->regmap, addr, s->buf, to_send);
+	regmap_noinc_write(s->regmap, addr, s->buf, to_send);
 	regcache_cache_bypass(s->regmap, false);
 }
 
@@ -491,6 +500,18 @@ static bool sc16is7xx_regmap_volatile(struct device *dev, unsigned int reg)
 }
 
 static bool sc16is7xx_regmap_precious(struct device *dev, unsigned int reg)
+{
+	switch (reg >> SC16IS7XX_REG_SHIFT) {
+	case SC16IS7XX_RHR_REG:
+		return true;
+	default:
+		break;
+	}
+
+	return false;
+}
+
+static bool sc16is7xx_regmap_noinc(struct device *dev, unsigned int reg)
 {
 	switch (reg >> SC16IS7XX_REG_SHIFT) {
 	case SC16IS7XX_RHR_REG:
@@ -1473,6 +1494,8 @@ static struct regmap_config regcfg = {
 	.cache_type = REGCACHE_RBTREE,
 	.volatile_reg = sc16is7xx_regmap_volatile,
 	.precious_reg = sc16is7xx_regmap_precious,
+	.writeable_noinc_reg = sc16is7xx_regmap_noinc,
+	.readable_noinc_reg = sc16is7xx_regmap_noinc,
 };
 
 #ifdef CONFIG_SERIAL_SC16IS7XX_SPI
