@@ -19,3 +19,7 @@ __pycache__/
 
 # Local reference docs not tracked in this repo
 docs/sc126is752.pdf
+
+# clangd (호스트 종속 — 각자 빌드 시 생성)
+compile_commands.json
+.cache/
