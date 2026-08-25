@@ -37,6 +37,8 @@ provenance를 독립적으로 관리합니다.
   `9f71cb9` 소스 내용과 맞춰 관리합니다.
 - `pim-package-jhw`는 개인 GitHub workflow용이며 critical regression 수정
   PR #3가 합쳐진 `1788388` 기준입니다.
+- source repo `master`를 `pim-package-jhw` 바이너리와 맞추는 것은 목표가
+  아닙니다. 개인 패키지의 소스 기준은 fix 브랜치입니다.
 - 같은 vermagic을 사용하지만 기능과 수정 수준이 다르므로 서로를 단순 복사해
   덮어쓰면 안 됩니다.
 
@@ -160,8 +162,9 @@ provenance를 독립적으로 관리합니다.
 | 드라이버 설명 | `SC16IS7XX ext serial driver v5.10.240` |
 | vermagic | `5.10.35-lts-5.10.y+g2fce14defc04 SMP preempt mod_unload modversions aarch64` |
 
-패키지의 Git LFS pointer OID와 이 저장소의 로컬 빌드 산출물 SHA-256이
-`1b38dd57...`로 일치합니다.
+패키지 반영 당시 기록된 Git LFS pointer OID와 빌드 산출물 SHA-256은
+`1b38dd57...`로 일치합니다. 현재 환경에서 같은 source blob을 fresh build한
+결과까지 이 SHA와 일치한다는 뜻은 아닙니다.
 
 ### 5.3 포함된 후속 기능과 수정
 
@@ -181,7 +184,37 @@ provenance를 독립적으로 관리합니다.
 
 ---
 
-## 6. 소스 브랜치 정책과 패키지 바이너리 관계
+## 6. 실제 clean build 비교
+
+검증일: **2026-08-25**
+
+동일한 source 저장소 경로에서 각 브랜치를 `make-for-imx8 clean` 후
+`make-for-imx8`로 빌드하고 두 패키지 바이너리와 비교했습니다.
+
+| 대상 | source ref | `sc16is7xx.c` blob | 크기 | SHA-256 | Build ID | module parameters |
+|---|---|---|---:|---|---|---|
+| 정식 `pim-package` 바이너리 | `9f71cb9` 계열 | `62675b6e...` | 697,864 | `05462e99...` | `40fabc22...` | 없음 |
+| fresh `master` 빌드 | `1db36fc` | `62675b6e...` | 533,232 | `709c62f9...` | `00383b7f...` | 없음 |
+| 개인 `pim-package-jhw` 바이너리 | tag → `1788388` | `070bb868...` | 550,888 | `1b38dd57...` | `9cb171f3...` | `diag`, `diag_period_ms`, `rx_trigger` |
+| fresh fix 빌드 | `ec75a5e` | `070bb868...` | 550,976 | `82f6c65b...` | `6ed76ac4...` | `diag`, `diag_period_ms`, `rx_trigger` |
+
+판정 결과는 다음과 같습니다.
+
+- fresh `master`와 `pim-package-jhw`는 source blob과 module parameters부터
+  다르며 `cmp`도 실패합니다. 두 대상을 맞추지 않는 것이 정상 정책입니다.
+- fresh `master`는 정식 패키지와 source blob, vermagic, module parameters
+  유무가 일치하지만 전체 ELF SHA-256과 Build ID는 일치하지 않습니다.
+- fresh fix는 개인 패키지와 source blob, vermagic, 전체 `modinfo` 항목
+  (파일명 제외)이 일치하지만 전체 ELF SHA-256과 Build ID는 일치하지 않습니다.
+- 같은 source blob도 툴체인, kernel build output, 빌드 경로와 디버그 정보가
+  고정되지 않으면 기존 패키지 ELF를 byte-for-byte 재현하지 못할 수 있습니다.
+
+따라서 이 문서에서 **소스 기준 일치**는 source blob과 `modinfo`가 일치한다는
+뜻이며, **바이너리 동일**은 별도로 `cmp` 또는 SHA-256이 일치할 때만 사용합니다.
+
+---
+
+## 7. 소스 브랜치 정책과 패키지 바이너리 관계
 
 2026-08-25부터 소스 브랜치는 다음 역할로 관리합니다.
 
@@ -219,9 +252,9 @@ source blob과 패키지 버전이 바뀌는 별도 변경으로 취급합니다
 
 ---
 
-## 7. 빌드 및 패키지 반영 게이트
+## 8. 빌드 및 패키지 반영 게이트
 
-### 7.1 빌드 전
+### 8.1 빌드 전
 
 ```bash
 cd /home/jhw/ai/opencode/projects/sc16is7xx
@@ -237,7 +270,7 @@ git rev-parse HEAD:sc16is7xx.c
   `fix/sc16is7xx-critical-regressions`의 source blob `070bb868...`을 확인합니다.
 - source blob이 다르면 단순 재빌드가 아니라 드라이버 버전 변경으로 취급합니다.
 
-### 7.2 빌드 후
+### 8.2 빌드 후
 
 ```bash
 ./make-for-imx8
@@ -246,11 +279,13 @@ modinfo sc16is7xx_ext.ko
 readelf -n sc16is7xx_ext.ko
 ```
 
-SHA-256, ELF Build ID, vermagic, module parameters를 확인합니다. 빌드 경로,
-툴체인 또는 커널 빌드 산출물이 다르면 같은 소스에서도 전체 바이너리 해시가
-달라질 수 있으므로 source blob과 `modinfo`를 함께 판정 근거로 사용합니다.
+SHA-256, ELF Build ID, vermagic, module parameters를 확인합니다. 기존 패키지
+파일과 source 기준을 비교할 때는 먼저 `make-for-imx8 clean`으로 stale object를
+제거합니다. 빌드 경로, 툴체인 또는 커널 빌드 산출물이 다르면 같은 소스에서도
+전체 바이너리 해시가 달라질 수 있으므로 source blob과 `modinfo`를 함께 판정
+근거로 사용합니다.
 
-### 7.3 패키지 반영 후 기록
+### 8.3 패키지 반영 후 기록
 
 패키지 커밋 메시지나 동반 문서에는 최소한 다음 정보를 남깁니다.
 
@@ -267,7 +302,7 @@ board verification: <결과>
 
 ---
 
-## 8. 판정 범위와 한계
+## 9. 판정 범위와 한계
 
 확정 가능한 내용은 다음과 같습니다.
 
@@ -275,8 +310,10 @@ board verification: <결과>
 - `pim-package` 바이너리는 `a721331` 이전의 초기 `9f71cb9` 소스 계열입니다.
 - `pim-package-jhw` 대상 파일은 `158fff4`의 Git LFS 객체와 동일합니다.
 - `pim-package-jhw` 패키지 커밋은 source commit `1788388`을 명시합니다.
-- 현재 로컬 빌드 산출물과 `pim-package-jhw` 바이너리의 SHA-256 및 Build ID가
-  일치합니다.
+- 현재 fix와 `pim-package-jhw`는 source blob과 `modinfo`가 일치합니다.
+- 현재 fresh fix 빌드와 기존 `pim-package-jhw` 바이너리는 SHA-256, Build ID,
+  파일 크기가 다르므로 byte-identical 재현으로 판정하지 않습니다.
+- 현재 fresh master 빌드는 `pim-package-jhw`의 소스 기준이 아닙니다.
 
 확정할 수 없는 내용은 다음과 같습니다.
 
