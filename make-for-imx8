@@ -1,10 +1,29 @@
 #!/bin/bash
 # source 로 부르면 exit 가 호출한 셸을 죽인다. 실행이면 exit, source 면 return 한다.
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _mfi_end='return'; else _mfi_end='exit'; fi
+[ "${SDK_LOC:-}" ] || SDK_LOC=/shared/fsl-imx-xwayland/5.10-hardknott
+[ "${SDK_NAME:-}" ] || SDK_NAME=cortexa53-crypto-poky-linux
+
+[ ! -e "${SDK_LOC}/environment-setup-${SDK_NAME}" ] && {
+    echo "Sorry, please verify: ${SDK_LOC}/environment-setup-${SDK_NAME}"
+    "$_mfi_end" 1
+}
+
+# shellcheck disable=SC1090 # SDK setup path is selected at runtime.
+# source 실패를 흘리면 잘못된 툴체인으로 빌드가 진행된다. 종료 코드를 확인한다.
+. "${SDK_LOC}/environment-setup-${SDK_NAME}" || {
+    _sdk_rc=$?   # echo 보다 먼저 읽어야 한다. 뒤에서 읽으면 echo 의 상태(0)를 잡는다.
+    echo "SDK environment-setup 소싱 실패: ${SDK_LOC}/environment-setup-${SDK_NAME}" >&2
+    "$_mfi_end" "$_sdk_rc"
+}
+
 export KERNEL_SRC=/opt/desktop/build-desktop/workspace/sources/linux-imx
 export KBUILD_OUTPUT=/opt/desktop/build-desktop/workspace/sources/build
 export ARCH=arm64
-export CROSS_COMPILE=aarch64-linux-gnu-
+export CROSS_COMPILE=aarch64-poky-linux-
+
+# Prevent userspace SDK linker flags from leaking into the kernel build.
+unset LDFLAGS
 
 make -C ${KERNEL_SRC} O=${KBUILD_OUTPUT} M=$(pwd) $@
 
