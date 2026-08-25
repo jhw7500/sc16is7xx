@@ -191,13 +191,28 @@ provenance를 독립적으로 관리합니다.
 | `master` 기준 소스 커밋 | `9f71cb97ff1c0fe2401a0d1b8b6ababbecac2e19` |
 | `master:sc16is7xx.c` 기대 blob | `62675b6ee0811dbf6e7bcad0ef95fc534a08a6ae` |
 | `fix/sc16is7xx-critical-regressions` 역할 | 개인 GitHub workflow용 최신 수정 소스 |
-| 최신 내용의 merge commit | `1788388e038760c899e78009e6a4b1b0e3bdfc8c` |
-| 실제 마지막 드라이버 변경 커밋 | `85a3de446edc1b3d4f67ea97364e41e0e727713e` |
+| 기존 `pim-package-jhw` 바이너리 source | `1788388e038760c899e78009e6a4b1b0e3bdfc8c` |
+| 기존 source의 마지막 드라이버 변경 | `85a3de446edc1b3d4f67ea97364e41e0e727713e` |
 | fix 브랜치 `sc16is7xx.c` 기대 blob | `070bb868090420f23bebce8bfc1cd17173d20276` |
 
-`master`는 전체 Git 이력과 문서를 유지하면서 `sc16is7xx.c` 내용만 정식
-릴리스 기준으로 복원합니다. 최신 수정 소스와 이 문서는 fix 브랜치에도
-보존합니다. 이 구성은 history rewrite 없이 두 사용 목적을 분리합니다.
+`master`는 root commit `9f71cb9`의 정식 릴리스 드라이버 source blob을 그대로
+유지하고, 빌드 문서·검증 도구·workflow·provenance를 논리 단위 커밋으로
+쌓습니다. 반복된 workflow 버전 갱신 이력은 최종 상태를 나타내는 하나의
+workflow 커밋으로 통합합니다.
+
+fix 브랜치는 `master`에서 시작해 FIFO, 진단·serial 설정, TX/IER, modem IRQ
+기능별 커밋을 순서대로 적용합니다. 따라서 브랜치 HEAD 자체가 `master`보다
+앞에 있고, checkout 즉시 개인 workflow용 최종 소스를 얻을 수 있습니다.
+
+기존 패키지에 기록된 source commit `1788388`은 clean-history 재작성 후에도
+annotated tag `package/pim-package-jhw-158fff4-source`로 영구 보존합니다. 과거
+패키지 재현은 이 tag를 사용하고, 새 빌드는 브랜치 HEAD와 source blob을 함께
+기록합니다.
+
+최신 수정 source blob `070bb868...`은 기존 CRLF 줄끝을 포함합니다. 이 때문에
+`master`와 비교한 `git diff --check`는 trailing whitespace를 보고하지만, 현재
+패키지 provenance를 보존하기 위해 줄끝을 정규화하지 않습니다. 줄끝 변경은
+source blob과 패키지 버전이 바뀌는 별도 변경으로 취급합니다.
 
 브랜치 HEAD만 비교해서는 안 됩니다. 문서나 CI만 변경된 커밋일 수 있으므로
 항상 `git rev-parse <ref>:sc16is7xx.c`로 드라이버 소스 blob도 함께 기록합니다.

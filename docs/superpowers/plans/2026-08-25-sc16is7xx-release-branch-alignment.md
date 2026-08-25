@@ -1,5 +1,10 @@
 # sc16is7xx Release Branch Alignment Implementation Plan
 
+> **Status (2026-08-25): Superseded after execution.** 아래 내용은 최초의
+> non-force 정렬 계획을 보존한 기록이다. 최종 저장소는 반복된 workflow
+> 변경을 하나로 통합하고 드라이버 변경을 기능별 커밋으로 나눈 clean-history
+> 구조이며, 현재 운영 기준은 `docs/sc16is7xx-ext-ko-provenance.md`를 따른다.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `master` carry the driver source used by the official GitLab `pim-package` release while preserving the latest corrected driver on `fix/sc16is7xx-critical-regressions` for the private GitHub workflow.
