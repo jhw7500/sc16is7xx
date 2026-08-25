@@ -26,6 +26,7 @@
 #include <linux/spi/spi.h>
 #include <linux/uaccess.h>
 #include <linux/units.h>
+#include <linux/jiffies.h>
 
 #include <linux/version.h>
 
@@ -42,6 +43,30 @@
 
 #define SC16IS7XX_NAME			"sc16is7xx_ext"
 #define SC16IS7XX_MAX_DEVS		8
+
+static bool sc16is7xx_diag;
+module_param_named(diag, sc16is7xx_diag, bool, 0644);
+MODULE_PARM_DESC(diag, "Enable periodic SC16IS7xx diagnostic logs");
+
+static unsigned int sc16is7xx_diag_period_ms = 1000;
+module_param_named(diag_period_ms, sc16is7xx_diag_period_ms, uint, 0644);
+MODULE_PARM_DESC(diag_period_ms,
+		 "SC16IS7xx diagnostic log period in ms");
+
+static unsigned int sc16is7xx_rx_trigger = 4;
+module_param_named(rx_trigger, sc16is7xx_rx_trigger, uint, 0444);
+MODULE_PARM_DESC(rx_trigger,
+		 "SC16IS7xx RX interrupt trigger level in bytes (4..60, step 4)");
+
+static unsigned int sc16is7xx_get_rx_trigger(void)
+{
+	unsigned int rx_trigger = sc16is7xx_rx_trigger;
+
+	if (rx_trigger < 4 || rx_trigger > 60 || (rx_trigger % 4))
+		return 4;
+
+	return rx_trigger;
+}
 
 /* SC16IS7XX register definitions */
 #define SC16IS7XX_RHR_REG		(0x00) /* RX FIFO */
@@ -330,6 +355,12 @@ struct sc16is7xx_one {
 	struct kthread_work		reg_work;
 	struct sc16is7xx_one_config	config;
 	bool				irda_mode;
+	unsigned long			last_diag_jiffies;
+	bool				baud_log_initialized;
+	unsigned int			last_logged_baud;
+	unsigned int			last_logged_uartclk;
+	unsigned int			last_logged_prescaler;
+	unsigned long			last_logged_div;
 };
 
 struct sc16is7xx_port {
@@ -538,8 +569,10 @@ static bool sc16is7xx_regmap_noinc(struct device *dev, unsigned int reg)
 static int sc16is7xx_set_baud(struct uart_port *port, int baud)
 {
 	struct sc16is7xx_port *s = dev_get_drvdata(port->dev);
+	struct sc16is7xx_one *one = to_sc16is7xx_one(port, port);
 	u8 lcr;
 	unsigned int prescaler = 1;
+	unsigned int actual_baud;
 	unsigned long clk = port->uartclk, div = clk / 16 / baud;
 
 	if (div >= BIT(16)) {
@@ -588,6 +621,10 @@ static int sc16is7xx_set_baud(struct uart_port *port, int baud)
 	sc16is7xx_port_write(port, SC16IS7XX_LCR_REG,
 			     SC16IS7XX_LCR_CONF_MODE_A);
 
+	/* Guard against zero divisor (extreme baud vs clock) */
+	if (div == 0)
+		div = 1;
+
 	/* Write the new divisor */
 	regcache_cache_bypass(s->regmap, true);
 	sc16is7xx_port_write(port, SC16IS7XX_DLH_REG, div / 256);
@@ -597,13 +634,51 @@ static int sc16is7xx_set_baud(struct uart_port *port, int baud)
 	/* Put LCR back to the normal mode */
 	sc16is7xx_port_write(port, SC16IS7XX_LCR_REG, lcr);
 
-dev_info(port->dev,
-  "baud=%d uartclk=%u divisor=%lu DLL=0x%02lx DLH=0x%02lx MCR=0x%02x\n",
-  baud, port->uartclk, div,
-  div & 0xFF, (div >> 8) & 0xFF,
-  sc16is7xx_port_read(port, SC16IS7XX_MCR_REG));
+	actual_baud = DIV_ROUND_CLOSEST((clk / prescaler) / 16, div);
 
-	return DIV_ROUND_CLOSEST((clk / prescaler) / 16, div);
+	if (one->baud_log_initialized) {
+		if (one->last_logged_baud != baud ||
+		    one->last_logged_uartclk != port->uartclk ||
+		    one->last_logged_prescaler != prescaler ||
+		    one->last_logged_div != div)
+			dev_info(port->dev,
+				 "ttySC%d applied-serial-config requested_baud=%d actual_baud=%u uartclk=%u prescaler=%u divisor=%lu DLL=0x%02lx DLH=0x%02lx\n",
+				 port->line, baud, actual_baud, port->uartclk, prescaler, div,
+				 div & 0xFF, (div >> 8) & 0xFF);
+	} else {
+		one->baud_log_initialized = true;
+	}
+
+	one->last_logged_baud = baud;
+	one->last_logged_uartclk = port->uartclk;
+	one->last_logged_prescaler = prescaler;
+	one->last_logged_div = div;
+
+	return actual_baud;
+}
+
+static void sc16is7xx_diag_log(struct uart_port *port, const char *reason,
+				       unsigned int iir, unsigned int rxlen,
+				       unsigned int lsr)
+{
+	struct sc16is7xx_one *one = to_sc16is7xx_one(port, port);
+
+	if (!sc16is7xx_diag)
+		return;
+
+	if (time_before(jiffies, one->last_diag_jiffies +
+			msecs_to_jiffies(max(sc16is7xx_diag_period_ms, 100U))))
+		return;
+
+	one->last_diag_jiffies = jiffies;
+
+	dev_info(port->dev,
+		 "ttySC%d diag=%s iir=0x%02x rxlen=%u lsr=0x%02x icount(rx=%u tx=%u oe=%u fe=%u pe=%u brk=%u bufovr=%u)\n",
+		 port->line, reason, iir, rxlen, lsr,
+		 port->icount.rx, port->icount.tx,
+		 port->icount.overrun, port->icount.frame,
+		 port->icount.parity, port->icount.brk,
+		 port->icount.buf_overrun);
 }
 
 static void sc16is7xx_handle_rx(struct uart_port *port, unsigned int rxlen,
@@ -611,12 +686,16 @@ static void sc16is7xx_handle_rx(struct uart_port *port, unsigned int rxlen,
 {
 	struct sc16is7xx_port *s = dev_get_drvdata(port->dev);
 	unsigned int lsr = 0, ch, flag, bytes_read, i;
+	unsigned int rxlen_orig = rxlen;
 	bool read_lsr = (iir == SC16IS7XX_IIR_RLSE_SRC) ? true : false;
 
 	if (unlikely(rxlen >= sizeof(s->buf))) {
+		unsigned int full_lsr = sc16is7xx_port_read(port,
+						    SC16IS7XX_LSR_REG);
+
 		dev_warn_ratelimited(port->dev,
-				     "ttySC%i: Possible RX FIFO overrun: %d\n",
-				     port->line, rxlen);
+				     "ttySC%i: Possible RX FIFO overrun: %d iir=0x%02x lsr=0x%02x\n",
+				     port->line, rxlen, iir, full_lsr);
 		port->icount.buf_overrun++;
 		/* Ensure sanity of RX level */
 		rxlen = sizeof(s->buf);
@@ -656,6 +735,13 @@ static void sc16is7xx_handle_rx(struct uart_port *port, unsigned int rxlen,
 			else if (lsr & SC16IS7XX_LSR_OE_BIT)
 				port->icount.overrun++;
 
+			if (lsr & SC16IS7XX_LSR_OE_BIT)
+				dev_warn_ratelimited(port->dev,
+					"ttySC%d RX overrun iir=0x%02x rxlen=%u lsr=0x%02x icount(rx=%u tx=%u oe=%u)\n",
+					port->line, iir, rxlen_orig, lsr,
+					port->icount.rx, port->icount.tx,
+					port->icount.overrun);
+
 			lsr &= port->read_status_mask;
 			if (lsr & SC16IS7XX_LSR_BI_BIT)
 				flag = TTY_BREAK;
@@ -682,6 +768,8 @@ static void sc16is7xx_handle_rx(struct uart_port *port, unsigned int rxlen,
 	}
 
 	tty_flip_buffer_push(&port->state->port);
+	if (unlikely(sc16is7xx_diag))
+		sc16is7xx_diag_log(port, "rx", iir, rxlen_orig, lsr);
 }
 
 static void sc16is7xx_handle_tx(struct uart_port *port)
@@ -1059,6 +1147,7 @@ static int sc16is7xx_startup(struct uart_port *port)
 	struct sc16is7xx_one *one = to_sc16is7xx_one(port, port);
 	struct sc16is7xx_port *s = dev_get_drvdata(port->dev);
 	unsigned int val;
+	unsigned int rx_trigger;
 
 	sc16is7xx_power(port, 1);
 
@@ -1089,6 +1178,10 @@ static int sc16is7xx_startup(struct uart_port *port)
 	sc16is7xx_port_write(port, SC16IS7XX_TCR_REG,
 			     SC16IS7XX_TCR_RX_RESUME(24) |
 			     SC16IS7XX_TCR_RX_HALT(48));
+
+	rx_trigger = sc16is7xx_get_rx_trigger();
+	sc16is7xx_port_write(port, SC16IS7XX_TLR_REG,
+			     SC16IS7XX_TLR_RX_TRIGGER(rx_trigger));
 
 	regcache_cache_bypass(s->regmap, false);
 
@@ -1346,6 +1439,11 @@ static int sc16is7xx_probe(struct device *dev,
 			ret = -ENOMEM;
 			goto out_ports;
 		}
+
+		dev_info(dev,
+			 "ttySC%d initial-config uartclk=%lu base_baud=%lu rx_trigger=%u irq=%d\n",
+			 s->p[i].port.line, freq, freq / 16,
+			 sc16is7xx_get_rx_trigger(), irq);
 
 		/* Disable all interrupts */
 		sc16is7xx_port_write(&s->p[i].port, SC16IS7XX_IER_REG, 0);
