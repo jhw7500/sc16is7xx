@@ -869,6 +869,10 @@ static bool sc16is7xx_port_irq(struct sc16is7xx_port *s, int portno)
 		case SC16IS7XX_IIR_THRI_SRC:
 			sc16is7xx_handle_tx(port);
 			break;
+		case SC16IS7XX_IIR_MSI_SRC:
+		case SC16IS7XX_IIR_CTSRTS_SRC:
+			sc16is7xx_port_read(port, SC16IS7XX_MSR_REG);
+			break;
 		default:
 			dev_err_ratelimited(port->dev,
 					    "ttySC%i: Unexpected interrupt: %x",
