@@ -47,12 +47,41 @@ prescaler = 4 (MCR[7]=1, divisor >= 65536일 때 자동 전환)
 
 ### 크로스 컴파일 (iMX8MP)
 
+호스트별 경로는 저장소에 없습니다. 처음 한 번만 `.env`를 만듭니다.
+
 ```bash
+cp .env.example .env       # 편집기로 열어 경로를 채웁니다
 ./make-for-imx8
 ```
 
-빌드 환경 변수는 `make-for-imx8` 스크립트에 정의되어 있습니다.
-`KERNEL_SRC`, `KBUILD_OUTPUT`, `ARCH`, `CROSS_COMPILE`을 환경에 맞게 수정하세요.
+`.env`는 `.gitignore` 대상이라 호스트마다 값이 달라도 커밋이 충돌하지 않습니다.
+채워야 할 항목의 정본은 `.env.example`입니다.
+
+| 변수 | 무엇인가 | 비울 수 있나 |
+|---|---|---|
+| `SDK_LOC` | Yocto SDK 설치 위치 | 아니오 |
+| `SDK_NAME` | SDK 타깃 이름 (`cortexa53-crypto-poky-linux`) | 아니오 |
+| `KERNEL_SRC` | 커널 **소스 트리** (`arch/arm64/configs`가 있는 쪽) | 아니오 |
+| `KBUILD_OUTPUT` | 커널 **빌드 디렉터리** (`.config`·`include/config/auto.conf`가 있는 쪽) | 예 — 결합형 트리면 비웁니다 |
+
+`.env`가 없거나 위 셋 중 하나가 비면 빌드 전에 멈추고 무엇을 채워야 하는지 알려줍니다.
+
+래퍼(`./make-for-imx8`)를 거치면 우선순위는 **환경변수 > `.env`**입니다. 일회성으로
+다른 트리에 빌드하려면 `.env`를 고치지 말고 앞에 붙입니다.
+
+```bash
+KERNEL_SRC=/다른/커널/소스 KBUILD_OUTPUT=/다른/커널/빌드 ./make-for-imx8
+```
+
+배포판 `linux-headers`처럼 소스와 빌드가 **한 디렉터리에 합쳐진** 트리면
+`KBUILD_OUTPUT`을 비웁니다 — 비면 `O=`가 붙지 않습니다.
+
+```bash
+make KERNEL_SRC=/usr/src/linux-headers-5.10.0-generic
+```
+
+`ARCH=arm64`와 `CROSS_COMPILE=aarch64-poky-linux-`는 타깃 고정값이라 `make-for-imx8`이
+직접 넘깁니다.
 
 ### Yocto devshell
 
